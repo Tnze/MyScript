@@ -3,7 +3,7 @@
 #include <utility>
 
 struct token {
-    enum {
+    enum tag_t {
         number, single, word
     } tag;
 };
@@ -20,11 +20,47 @@ struct token_single : token {
     explicit token_single(int v) : token({.tag=single}), value(v) {};
 };
 
-struct token_word : token {
-    std::string &value;
+//struct token_word : token {
+//    std::string &value;
+//
+//    explicit token_word(std::string &v) : token({.tag=word}), value(v) {};
+//};
 
-    explicit token_word(std::string &v) : token({.tag=word}), value(v) {};
+struct ast {
+    enum {
+        expr
+    } tag;
 };
+
+struct ast_expr : ast {
+    enum tag_t {
+        num, opt
+    } expr_tag;
+
+    explicit ast_expr(enum tag_t t) :
+            ast({.tag=expr}),
+            expr_tag(t) {};
+};
+
+struct ast_number : ast_expr {
+    int value;
+
+    explicit ast_number(int v) :
+            ast_expr(num),
+            value(v) {};
+};
+
+struct ast_opt : ast_expr {
+    int op;
+    ast_expr *left, *right;
+
+    explicit ast_opt(int op, ast_expr *l, ast_expr *r) :
+            ast_expr(opt),
+            op(op),
+            left(l),
+            right(r) {};
+};
+
 
 token *lookahead = nullptr;
 
@@ -40,24 +76,27 @@ token *scan() {
         return new token_digit(v);
     }
     // handle word
-    if (int c = std::cin.peek();
-            islower(c) || isupper(c) || c == '_') {
-        std::string word;
-        do word += (char) std::cin.get();
-        while (c = std::cin.peek(), (islower(c) || isupper(c) || isdigit(c) || c == '_'));
-        return new token_word(word);
-    }
+//    int c = std::cin.peek();
+//    if (islower(c) || isupper(c) || c == '_') {
+//        std::string word;
+//        do word += (char) std::cin.get();
+//        while (c = std::cin.peek(), (islower(c) || isupper(c) || isdigit(c) || c == '_'));
+//        return new token_word(word);
+//    }
     return new token_single(std::cin.get());
 }
 
-/* term     ->  term * factor
+/*
+ * * * * left recursive * * * * *
+ * term     ->  term * factor
  *          |   term / factor
  *          |   factor
  * expr     ->  expr + term
  *          |   expr - term
  *          |   term
  * factor   -> digit | (expr)
- * * * * * * * * * * * * * * * * *
+ *
+ * * * * right recursive * * * * *
  * term     ->  factor rest1
  * rest1    ->  * factor rest1
  *          |   / factor rest1
@@ -71,72 +110,83 @@ token *scan() {
 
 void parse_match(token *t) {
     if (lookahead == t) lookahead = scan();
-    else throw std::exception("syntax error");
+    else throw std::logic_error("syntax error");
 }
 
-void parse_expr();
+ast_expr *parse_expr();
 
-void parse_term();
-
-void parse_factor() {
+ast_expr *parse_factor() {
     if (lookahead->tag == token::number) {
-        std::cout << ((token_digit *) lookahead)->value;
+        int v = ((token_digit *) lookahead)->value;
         parse_match(lookahead);
-    } else parse_expr();
+        return new ast_number(v);
+    } else return parse_expr();
 }
 
-void parse_rest1() {
-    if (lookahead->tag == token::single) {
-        auto lookahead_single = (token_single *) lookahead;
-        switch (lookahead_single->value) {
-            case '*':
-                parse_match(lookahead);
-                parse_term();
-                std::cout.put('*');
-                parse_rest1();
-                break;
-            case '/':
-                parse_match(lookahead);
-                parse_term();
-                std::cout.put('/');
-                parse_rest1();
-                break;
-            default:
-                /* do nothing */;
-        }
-    } else {/* do nothing */}
+ast_expr *parse_term() {
+    auto l = parse_factor();
+    while (lookahead->tag == token::single) {
+        int c = (((token_single *) lookahead)->value);
+        if (c == '*' || c == '/') {
+            parse_match(lookahead);
+            l = new ast_opt(c, l, parse_term());
+        } else break;
+    }
+    return l;
 }
 
-void parse_rest2() {
-    if (lookahead->tag == token::single) {
-        auto lookahead_single = (token_single *) lookahead;
-        switch (lookahead_single->value) {
+ast_expr *parse_expr() {
+    auto l = parse_term();
+    while (lookahead->tag == token::single) {
+        int c = ((token_single *) lookahead)->value;
+        if (c == '+' || c == '-') {
+            parse_match(lookahead);
+            l = new ast_opt(c, l, parse_term());
+        } else break;
+    }
+    return l;
+}
+
+int calc(ast_expr *expr) {
+    if (expr->expr_tag == ast_expr::num)
+        return ((ast_number *) expr)->value;
+    else if (expr->expr_tag == ast_expr::opt) {
+        auto opt = (ast_opt *) expr;
+        switch (opt->op) {
             case '+':
-                parse_match(lookahead);
-                parse_term();
-                std::cout.put('+');
-                parse_rest2();
-                break;
+                return calc(opt->left) + calc(opt->right);
             case '-':
-                parse_match(lookahead);
-                parse_term();
-                std::cout.put('-');
-                parse_rest2();
-                break;
-            default:
-                /* do nothing */;
+                return calc(opt->left) - calc(opt->right);
+            case '*':
+                return calc(opt->left) * calc(opt->right);
+            case '/':
+                return calc(opt->left) / calc(opt->right);
         }
-    } else {/* do nothing */}
+    }
+    throw std::logic_error("unknown expr_tag");
 }
 
-void parse_term() {
-    parse_factor();
-    parse_rest1();
-}
+int tmp_count = 0;
 
-void parse_expr() {
-    parse_term();
-    parse_rest2();
+int tac(ast_expr *expr) {
+    if (expr->expr_tag == ast_expr::opt) {
+        auto opt = (ast_opt *) expr;
+        int v_left, v_right;
+        bool is_num_left = opt->left->expr_tag == ast_expr::num;
+        bool is_num_right = opt->right->expr_tag == ast_expr::num;
+        v_left = is_num_left ? ((ast_number *) opt->left)->value
+                             : tac(((ast_opt *) opt)->left);
+        v_right = is_num_right ? ((ast_number *) opt->right)->value
+                               : tac(((ast_opt *) opt)->right);
+        int my_t = tmp_count++;
+        std::cout << "t" << my_t << " = "
+                  << (is_num_left ? "" : "t") << v_left
+                  << " " << (char) opt->op << " "
+                  << (is_num_right ? "" : "t") << v_right
+                  << std::endl;
+        return my_t;
+    }
+    throw std::logic_error("unsupported expr_tag");
 }
 
 int main() {
@@ -144,7 +194,9 @@ int main() {
     try {
         delete lookahead;
         lookahead = scan();
-        parse_expr();
+        ast_expr *my_ast = parse_expr();
+//        std::cout << calc(my_ast) << std::endl;
+        tac(my_ast);
     } catch (std::exception &e) {
         std::cout << e.what();
     }
