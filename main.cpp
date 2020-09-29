@@ -126,10 +126,10 @@ ast_expr *parse_factor() {
 ast_expr *parse_term() {
     auto l = parse_factor();
     while (lookahead->tag == token::single) {
-        int c = (((token_single *) lookahead)->value);
+        int c = ((token_single *) lookahead)->value;
         if (c == '*' || c == '/') {
             parse_match(lookahead);
-            l = new ast_opt(c, l, parse_term());
+            l = new ast_opt(c, l, parse_factor());
         } else break;
     }
     return l;
@@ -166,25 +166,30 @@ int calc(ast_expr *expr) {
     throw std::logic_error("unknown expr_tag");
 }
 
-int tmp_count = 0;
 
 int tac(ast_expr *expr) {
-    if (expr->expr_tag == ast_expr::opt) {
+    static int tmp_counter = 0;
+    if (expr->expr_tag == ast_expr::num) {
+        std::cout << "tmp" << tmp_counter << " = "
+                  << ((ast_number *) expr)->value
+                  << std::endl;
+        return tmp_counter++;
+    } else if (expr->expr_tag == ast_expr::opt) {
         auto opt = (ast_opt *) expr;
-        int v_left, v_right;
         bool is_num_left = opt->left->expr_tag == ast_expr::num;
         bool is_num_right = opt->right->expr_tag == ast_expr::num;
-        v_left = is_num_left ? ((ast_number *) opt->left)->value
-                             : tac(((ast_opt *) opt)->left);
-        v_right = is_num_right ? ((ast_number *) opt->right)->value
-                               : tac(((ast_opt *) opt)->right);
-        int my_t = tmp_count++;
-        std::cout << "t" << my_t << " = "
-                  << (is_num_left ? "" : "t") << v_left
+        int v_left = is_num_left
+                     ? ((ast_number *) opt->left)->value
+                     : tac(((ast_opt *) opt)->left);
+        int v_right = is_num_right
+                      ? ((ast_number *) opt->right)->value
+                      : tac(((ast_opt *) opt)->right);
+        std::cout << "tmp" << tmp_counter << " = "
+                  << (is_num_left ? "" : "tmp") << v_left
                   << " " << (char) opt->op << " "
-                  << (is_num_right ? "" : "t") << v_right
+                  << (is_num_right ? "" : "tmp") << v_right
                   << std::endl;
-        return my_t;
+        return tmp_counter++;
     }
     throw std::logic_error("unsupported expr_tag");
 }
@@ -196,7 +201,8 @@ int main() {
         lookahead = scan();
         ast_expr *my_ast = parse_expr();
 //        std::cout << calc(my_ast) << std::endl;
-        tac(my_ast);
+        int result = tac(my_ast);
+        std::cout << "output temp" << result << std::endl;
     } catch (std::exception &e) {
         std::cout << e.what();
     }
