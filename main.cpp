@@ -62,7 +62,7 @@ struct ast_opt_expr : ast_expr {
 
 struct ast_stmt : ast {
     enum tag_t {
-        assign
+        assign, if_goto
     } stmt_tag;
 
     explicit ast_stmt(enum tag_t t) :
@@ -75,6 +75,14 @@ struct ast_assign_stmt : ast_stmt {
 
     explicit ast_assign_stmt(std::string &lhs, ast_expr *rhs) :
             ast_stmt(assign), lhs(lhs), rhs(rhs) {};
+};
+
+struct ast_if_goto_stmt : ast_stmt {
+    ast_expr *expr;
+    std::string label;
+
+    explicit ast_if_goto_stmt(ast_expr *expr, std::string label) :
+            ast_stmt(if_goto), expr(expr), label(label) {};
 };
 
 token *lookahead = nullptr;
@@ -165,19 +173,37 @@ ast_expr *parse_expr() {
 
 /* * * * * statement * * * * *
  * stmt     ->  word = expr
- *          |   if(expr) stmt
- *          |   goto label
+ *          |   if(expr) stmt goto label
  * */
 
 ast_stmt *parse_stmt() {
     if (lookahead->tag == token::word) {
-        std::string lhs(((token_word *) lookahead)->value);
-        parse_match(lookahead);
-        if (lookahead->tag == token::single &&
-            ((token_single *) lookahead)->value == '=') {
+        std::string word(((token_word *) lookahead)->value);
+        if (word == "if") {             // if(expr) stmt goto
             parse_match(lookahead);
-            return new ast_assign_stmt(lhs, parse_expr());
-        } else throw std::logic_error("syntax error");
+            if (lookahead->tag != token::single || ((token_single *) lookahead)->value != '(')
+                throw std::logic_error("syntax error: expected '(' after 'if'");
+            else parse_match(lookahead);
+            auto expr = parse_expr();
+            if (lookahead->tag != token::single || ((token_single *) lookahead)->value != ')')
+                throw std::logic_error("syntax error: expected ')'");
+            else parse_match(lookahead);
+            if (lookahead->tag != token::word || ((token_word *) lookahead)->value != "goto")
+                throw std::logic_error("syntax error: expected 'goto'");
+            else parse_match(lookahead);
+            if (lookahead->tag != token::word)
+                throw std::logic_error("syntax error: expected a label after 'goto'");
+            auto label = ((token_word *) lookahead)->value;
+            parse_match(lookahead);
+            return new ast_if_goto_stmt(expr, label);
+        } else {                        // word = expr
+            parse_match(lookahead);
+            if (lookahead->tag == token::single &&
+                ((token_single *) lookahead)->value == '=') {
+                parse_match(lookahead);
+                return new ast_assign_stmt(word, parse_expr());
+            } else throw std::logic_error("syntax error");
+        }
     }
     throw std::logic_error("unknown expr_tag");
 }
@@ -234,9 +260,11 @@ void tac_stmt(ast_stmt *stmt) {
         auto assign_stmt = (ast_assign_stmt *) stmt;
         int tmp = tac_expr(assign_stmt->rhs);
         std::cout << assign_stmt->lhs << " = tmp" << tmp << std::endl;
-        return;
-    }
-    throw std::logic_error("unsupported stmt_tag");
+    } else if (stmt->stmt_tag == ast_stmt::if_goto) {
+        auto if_goto_stmt = (ast_if_goto_stmt *) stmt;
+        int expr_tmp = tac_expr(if_goto_stmt->expr);
+        std::cout << "if tmp" << expr_tmp << " goto " << if_goto_stmt->label << std::endl;
+    } else throw std::logic_error("unsupported stmt_tag");
 }
 
 int main() {
