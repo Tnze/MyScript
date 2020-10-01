@@ -1,6 +1,7 @@
 #include <iostream>
 #include <string>
 #include <utility>
+#include <stack>
 
 struct token {
     enum tag_t {
@@ -62,11 +63,19 @@ struct ast_opt_expr : ast_expr {
 
 struct ast_stmt : ast {
     enum tag_t {
-        assign, if_stmt, goto_stmt
+        assign, seq_stmt, if_stmt, goto_stmt
     } stmt_tag;
 
     explicit ast_stmt(enum tag_t t) :
             ast({.tag=expr}), stmt_tag(t) {};
+};
+
+struct ast_seq_stmt : ast_stmt {
+    ast_stmt *stmt;
+    ast_seq_stmt *next;
+
+    explicit ast_seq_stmt(ast_stmt *stmt, ast_seq_stmt *next) :
+            ast_stmt(seq_stmt), stmt(stmt), next(next) {};
 };
 
 struct ast_assign_stmt : ast_stmt {
@@ -80,7 +89,7 @@ struct ast_assign_stmt : ast_stmt {
 struct ast_goto_stmt : ast_stmt {
     std::string label;
 
-    explicit ast_goto_stmt(std::string label) :
+    explicit ast_goto_stmt(std::string &label) :
             ast_stmt(goto_stmt), label(label) {};
 };
 
@@ -179,27 +188,44 @@ ast_expr *parse_expr() {
 }
 
 /* * * * * statement * * * * *
- * stmts    ->  stmt | stmt \n stmt
+ * stmts    ->  stmt stmts | ε
  * stmt     ->  word = expr
- *          |   if(expr) stmt
+ *          |   if expr { stmts }
  *          |   goto word
- *          |   { opt_ret stmts opt_ret }
  * opt_ret  -> \n | ε
  * */
+
+void parse_opt_ret() {
+    if (lookahead->tag == token::single && ((token_single *) lookahead)->value == '\n')
+        parse_match(lookahead);
+}
 
 ast_stmt *parse_stmt() {
     if (lookahead->tag == token::word) {
         std::string word(((token_word *) lookahead)->value);
         if (word == "if") {             // if(expr) stmt goto
             parse_match(lookahead);         // if
-            if (lookahead->tag != token::single || ((token_single *) lookahead)->value != '(')
-                throw std::logic_error("syntax error: expected '(' after 'if'");
-            else parse_match(lookahead);    // (
             auto expr = parse_expr();       // expr
-            if (lookahead->tag != token::single || ((token_single *) lookahead)->value != ')')
-                throw std::logic_error("syntax error: expected ')'");
-            else parse_match(lookahead);    // )
-            auto stmt = parse_stmt();       // stmt
+
+            if (lookahead->tag != token::single || ((token_single *) lookahead)->value != '{')
+                throw std::logic_error("syntax error: expected '{'");
+            else parse_match(lookahead);    // {
+            parse_opt_ret();                // opt_ret
+
+            std::stack<ast_stmt *> seq;
+            while (lookahead->tag != token::single || ((token_single *) lookahead)->value != '}') {
+                seq.push(parse_stmt());
+                parse_opt_ret();
+            }
+            ast_seq_stmt *stmt = nullptr;
+            while (!seq.empty()) {
+                stmt = new ast_seq_stmt(seq.top(), stmt);
+                seq.pop();
+            }
+
+            if (lookahead->tag != token::single || ((token_single *) lookahead)->value != '}')
+                throw std::logic_error("syntax error: expected '}'");
+            else parse_match(lookahead);    // }
             return new ast_if_stmt(expr, stmt);
         } else if (word == "goto") {
             parse_match(lookahead);
@@ -243,26 +269,28 @@ int calc(ast_expr *expr) {
 int tac_expr(ast_expr *expr) {
     static int tmp_counter = 0;
     if (expr->expr_tag == ast_expr::num) {
-        std::cout << "tmp" << tmp_counter << " = "
+        std::cout << "reg" << tmp_counter << " = "
                   << ((ast_num_expr *) expr)->value
                   << std::endl;
-        return tmp_counter++;
+        return tmp_counter;
     } else if (expr->expr_tag == ast_expr::opt) {
         auto opt = (ast_opt_expr *) expr;
         bool is_num_left = opt->left->expr_tag == ast_expr::num;
         bool is_num_right = opt->right->expr_tag == ast_expr::num;
+        tmp_counter++;
         int v_left = is_num_left
                      ? ((ast_num_expr *) opt->left)->value
                      : tac_expr(((ast_opt_expr *) opt)->left);
         int v_right = is_num_right
                       ? ((ast_num_expr *) opt->right)->value
                       : tac_expr(((ast_opt_expr *) opt)->right);
-        std::cout << "tmp" << tmp_counter << " = "
-                  << (is_num_left ? "" : "tmp") << v_left
+        tmp_counter--;
+        std::cout << "reg" << tmp_counter << " = "
+                  << (is_num_left ? "" : "reg") << v_left
                   << " " << (char) opt->op << " "
-                  << (is_num_right ? "" : "tmp") << v_right
+                  << (is_num_right ? "" : "reg") << v_right
                   << std::endl;
-        return tmp_counter++;
+        return tmp_counter;
     }
     throw std::logic_error("unsupported expr_tag");
 }
@@ -271,14 +299,19 @@ void tac_stmt(ast_stmt *stmt) {
     if (stmt->stmt_tag == ast_stmt::assign) {
         auto assign_stmt = (ast_assign_stmt *) stmt;
         int tmp = tac_expr(assign_stmt->rhs);
-        std::cout << assign_stmt->lhs << " = tmp" << tmp << std::endl;
+        std::cout << assign_stmt->lhs << " = reg" << tmp << std::endl;
     } else if (stmt->stmt_tag == ast_stmt::if_stmt) {
         static int if_label_count = 0;
+        int this_label_count = if_label_count++;
         auto if_stmt = (ast_if_stmt *) stmt;
         int expr_tmp = tac_expr(if_stmt->expr);
-        std::cout << "if tmp" << expr_tmp << " goto IfLabel" << if_label_count << std::endl;
+        std::cout << "if_not reg" << expr_tmp << " goto LabelIf" << this_label_count << std::endl;
         tac_stmt(if_stmt->stmt);
-        std::cout << "IfLabel" << if_label_count++ << ":" << std::endl;
+        std::cout << "LabelIf" << this_label_count << ":" << std::endl;
+    } else if (stmt->stmt_tag == ast_stmt::seq_stmt) {
+        tac_stmt(((ast_seq_stmt *) stmt)->stmt);
+        if (((ast_seq_stmt *) stmt)->next != nullptr)
+            tac_stmt(((ast_seq_stmt *) stmt)->next);
     } else throw std::logic_error("unsupported stmt_tag");
 }
 
@@ -295,6 +328,6 @@ int main() {
     } catch (std::exception &e) {
         std::cout << e.what();
     }
-    std::cout.put('\n');
+    std::cout << "GoodBye, World!" << std::endl;
     return 0;
 }
